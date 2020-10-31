@@ -4,14 +4,16 @@ import { SFRPGModifierTypes, SFRPGModifierType, SFRPGEffectType } from "../modif
  * Application that is used to edit a dynamic modifier.
  * 
  * @param {Object} modifier The modifier being edited.
- * @param {Object} acotr    The actor that the modifier belongs to.
+ * @param {Object} target    The actor or item that the modifier belongs to.
  * @param {Object} options  Any options that modify the rendering of the sheet.
+ * @param {Object} owner    The actor that the target belongs to, if target is an item.
  */
 export default class SFRPGModifierApplication extends FormApplication {
-    constructor(modifier, actor, options={}) {
+    constructor(modifier, target, options={}, owner = null) {
         super(modifier, options);
 
-        this.actor = actor;
+        this.actor = target;
+        this.owner = owner;
     }
 
     static get defaultOptions() {
@@ -103,6 +105,7 @@ export default class SFRPGModifierApplication extends FormApplication {
                     }
                     break;
                 case SFRPGEffectType.SKILL:
+                case SFRPGEffectType.SKILL_RANKS:
                     target.prop('disabled', false);
                     target.find('option').remove();
                     for (const skills of Object.entries(CONFIG.SFRPG.skills)) {
@@ -157,6 +160,7 @@ export default class SFRPGModifierApplication extends FormApplication {
                 valueAffectedElement.prop('disabled', false);
                 break;
             case SFRPGEffectType.SKILL:
+            case SFRPGEffectType.SKILL_RANKS:
                 valueAffectedElement.prop('disabled', false);
                 break;
             case SFRPGEffectType.WEAPON_ATTACKS:
@@ -188,17 +192,8 @@ export default class SFRPGModifierApplication extends FormApplication {
         const modifiers = duplicate(this.actor.data.data.modifiers);
         const modifier = modifiers.find(mod => mod._id === this.modifier._id);
 
-        switch (formData['modifierType']) {
-            case SFRPGModifierType.CONSTANT:
-                formData['modifier'] = parseInt(formData['modifier']);
-
-                if (isNaN(formData['modifier'])) formData['modifier'] = 0;
-                modifier.max = formData['modifier'];
-                break;
-            case SFRPGModifierType.FORMULA:
-                modifier.max = Roll.maximize(formData['modifier']).total;
-                break;
-        }
+        const roll = new Roll(formData['modifier'], this.owner?.data?.data || this.actor.data.data);
+        modifier.max = roll.evaluate({maximize: true}).total;
 
         mergeObject(modifier, formData);
         

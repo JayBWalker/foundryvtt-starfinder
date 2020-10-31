@@ -57,6 +57,7 @@ export class ActorSheetSFRPG extends ActorSheet {
             isShip: this.entity.data.type === 'starship',
             isVehicle: this.entity.data.type === 'vehicle',
             isDrone: this.entity.data.type === 'drone',
+            isNPC: this.entity.data.type === 'npc',
             config: CONFIG.SFRPG
         };
 
@@ -174,7 +175,7 @@ export class ActorSheetSFRPG extends ActorSheet {
         html.find('.item-delete').click(ev => this._onItemDelete(ev));
 
         // Item Dragging
-        let handler = ev => this._onDragItemStart(ev);
+        let handler = ev => this._onDragStart(ev);
         html.find('li.item').each((i, li) => {
             li.setAttribute("draggable", true);
             li.addEventListener("dragstart", handler, false);
@@ -188,12 +189,16 @@ export class ActorSheetSFRPG extends ActorSheet {
 
         // Roll damage for item
         html.find('.item-action .damage').click(event => this._onItemRollDamage(event));
+        html.find('.item-action .healing').click(event => this._onItemRollDamage(event));
 
         // Item Recharging
         html.find('.item .item-recharge').click(event => this._onItemRecharge(event));
 
         // Item Equipping
         html.find('.item .item-equip').click(event => this._onItemEquippedChange(event));
+
+        // Condition toggling
+        html.find('.conditions input[type="checkbox"]').change(this._onToggleConditions.bind(this));
     }
 
     /** @override */
@@ -295,7 +300,7 @@ export class ActorSheetSFRPG extends ActorSheet {
         const header = event.currentTarget;
         let type = header.dataset.type;
         if (!type || type.includes(",")) {
-            let types = SFRPG.itemTypes;
+            let types = duplicate(SFRPG.itemTypes);
             if (type) {
                 let supportedTypes = type.split(',');
                 for (let key of Object.keys(types)) {
@@ -322,10 +327,14 @@ export class ActorSheetSFRPG extends ActorSheet {
                         label: game.i18n.format("SFRPG.NPCSheet.Interface.CreateItem.Button"),
                         callback: html => {
                             const form = html[0].querySelector("form");
-                            mergeObject(createData, validateForm(form));
+                            let formDataExtended = new FormDataExtended(form);
+                            mergeObject(createData, formDataExtended.toObject());
                             if (!createData.name) {
                                 createData.name = game.i18n.format("SFRPG.NPCSheet.Interface.CreateItem.Name");
                             }
+
+                            this.onBeforeCreateNewItem(createData);
+
                             this.actor.createOwnedItem(createData);
                         }
                     }
@@ -341,7 +350,14 @@ export class ActorSheetSFRPG extends ActorSheet {
             data: duplicate(header.dataset)
         };
         delete itemData.data['type'];
+
+        this.onBeforeCreateNewItem(itemData);
+
         return this.actor.createOwnedItem(itemData);
+    }
+
+    onBeforeCreateNewItem(itemData) {
+
     }
 
     /**
@@ -419,6 +435,54 @@ export class ActorSheetSFRPG extends ActorSheet {
         item.update({
             ["data.equipped"]: !item.data.data.equipped
         });
+    }
+
+    /**
+     * Toggles condition modifiers on or off.
+     * 
+     * @param {Event} event The triggering event.
+     */
+    async _onToggleConditions(event) {
+        event.preventDefault();
+
+        const target = $(event.currentTarget);
+        const condition = target.data('condition');
+        const active = target[0].checked;
+
+        if (active) {
+            // Try find existing condition, add from compendium if not found
+            let conditionItem = this.actor.items.find(x => x.type === "feat" && x.data.data.requirements?.toLowerCase() === "condition" && x.name.toLowerCase() === condition.toLowerCase());
+            if (!conditionItem) {
+                let compendium = game.packs.find(element => element.title.includes("Conditions"));
+                if (compendium) {
+                    // Let the compendium load
+                    await compendium.getIndex();
+
+                    let entry = compendium.index.find(e => e.name.toLowerCase() === condition.toLowerCase());
+                    if (entry) {
+                        let entity = await compendium.getEntity(entry._id);
+                        await this.actor.createOwnedItem(entity);
+                    }
+                }
+            }
+        } else {
+            // Try find existing condition, remove if possible
+            let conditionItem = this.actor.items.find(x => x.type === "feat" && x.data.data.requirements?.toLowerCase() === "condition" && x.name.toLowerCase() === condition.toLowerCase());
+            if (conditionItem) {
+                await this.actor.deleteOwnedItem(conditionItem._id);
+            }
+        }
+
+        if (["blinded", "cowering", "offkilter", "pinned", "stunned"].includes(condition)) {
+            const flatfooted = $('.condition.flatfooted');
+            const ffIsChecked = flatfooted.is(':checked');
+            flatfooted.prop("checked", !ffIsChecked).change();
+        }
+        
+        const tokens = this.actor.getActiveTokens(true);
+        for (const token of tokens) {
+            await token.toggleEffect(CONFIG.SFRPG.statusEffectIconMapping[condition]);
+        }
     }
 
     /**
@@ -704,18 +768,16 @@ export class ActorSheetSFRPG extends ActorSheet {
 
             const addedItem = await targetActor.createOwnedItem(itemData);
 
-            if (targetContainer) {
-                let newContents = [];
-                if (targetContainer.data.data.container?.contents) {
-                    newContents = duplicate(targetContainer.data.data.container?.contents || []);
-                }
-                let preferredStorageIndex = getFirstAcceptableStorageIndex(targetContainer, addedItem) || 0;
-                newContents.push({id: addedItem._id, index: preferredStorageIndex});
-                let update = { _id: targetContainer._id, "data.container.contents": newContents };
-                await targetActor.updateOwnedItem(update);
+            if (!(addedItem.type in SFRPG.containableTypes)) {
+                targetContainer = null;
+            }
+            
+            const itemInTargetActor = await moveItemBetweenActorsAsync(targetActor, addedItem, targetActor, targetContainer);
+            if (itemInTargetActor === addedItem) {
+                return await this._onSortItem(event, itemInTargetActor.data);
             }
 
-            return addedItem;
+            return itemInTargetActor;
         } else if (parsedDragData.data) {
             let sourceActor = new ActorItemHelper(parsedDragData.actorId, parsedDragData.tokenId, null);
             if (!ActorItemHelper.IsValidHelper(sourceActor)) {

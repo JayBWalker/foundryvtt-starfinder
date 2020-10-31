@@ -123,6 +123,16 @@ export async function moveItemBetweenActorsAsync(sourceActor, itemToMove, target
 
     if (!quantity) {
         quantity = itemToMove.data.data.quantity;
+
+        if (acceptsItem(targetItem, itemToMove, targetActor)) {
+            const storageIndex = getFirstAcceptableStorageIndex(targetItem, itemToMove);
+            if (storageIndex !== null) {
+                const storage = targetItem.data.data.container.storage[storageIndex];
+                if (storage.type === "slot") {
+                    quantity = 1;
+                }
+            }
+        }
     }
 
     if (sourceActor.actor === targetActor.actor) {
@@ -262,7 +272,7 @@ export function computeCompoundBulkForItem(item, contents) {
     }
 
     let personalBulk = 0;
-    if (item) {
+    if (item?.data?.bulk) {
         if (item.data.bulk.toUpperCase() === "L") {
             personalBulk = 1;
         } else if (!Number.isNaN(Number.parseInt(item.data.bulk))) {
@@ -337,6 +347,10 @@ function canMerge(itemA, itemB) {
 
 export function getFirstAcceptableStorageIndex(container, itemToAdd) {
     let index = -1;
+    if (!(container.type in SFRPG.containableTypes)) {
+        return null;
+    }
+
     for (let storageOption of container.data.data.container.storage) {
         index += 1;
         if (storageOption.amount == 0) {

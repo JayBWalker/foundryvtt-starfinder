@@ -44,6 +44,7 @@ export class ActorSheetSFRPGCharacter extends ActorSheetSFRPG {
 
         const inventory = {
             weapon: { label: game.i18n.format(SFRPG.itemTypes["weapon"]), items: [], dataset: { type: "weapon" }, allowAdd: true },
+            shield: { label: game.i18n.format(SFRPG.itemTypes["shield"]), items: [], dataset: { type: "shield" }, allowAdd: true },
             equipment: { label: game.i18n.format(SFRPG.itemTypes["equipment"]), items: [], dataset: { type: "equipment" }, allowAdd: true },
             consumable: { label: game.i18n.format(SFRPG.itemTypes["consumable"]), items: [], dataset: { type: "consumable" }, allowAdd: true },
             goods: { label: game.i18n.format(SFRPG.itemTypes["goods"]), items: [], dataset: { type: "goods" }, allowAdd: true },
@@ -54,25 +55,39 @@ export class ActorSheetSFRPGCharacter extends ActorSheetSFRPG {
             augmentation: { label: game.i18n.format(SFRPG.itemTypes["augmentation"]), items: [], dataset: { type: "augmentation" }, allowAdd: true }
         };
 
-        let [items, spells, feats, classes, races, themes, archetypes] = data.items.reduce((arr, item) => {
+        let [items, spells, feats, classes, races, themes, archetypes, conditionItems, asis] = data.items.reduce((arr, item) => {
             item.img = item.img || DEFAULT_TOKEN;
             item.isStack = item.data.quantity ? item.data.quantity > 1 : false;
             item.hasCapacity = item.data.capacity && (item.data.capacity.max > 0);
             item.isOnCooldown = item.data.recharge && !!item.data.recharge.value && (item.data.recharge.charged === false);
-            item.hasAttack = ["mwak", "rwak", "msak", "rsak"].includes(item.data.actionType) && (item.type !== "weapon" || item.data.equipped);
-            item.hasDamage = item.data.damage?.parts && item.data.damage.parts.length > 0 && (item.type !== "weapon" || item.data.equipped);
+            item.hasAttack = ["mwak", "rwak", "msak", "rsak"].includes(item.data.actionType) && (!["weapon", "shield"].includes(item.type) || item.data.equipped);
+            item.hasDamage = item.data.damage?.parts && item.data.damage.parts.length > 0 && (!["weapon", "shield"].includes(item.type) || item.data.equipped);
             item.hasUses = item.data.uses && (item.data.uses.max > 0);
             item.isCharged = !item.hasUses || item.data.uses?.value <= 0 || !item.isOnCooldown;
-            if (item.type === "spell") arr[1].push(item);
-            else if (item.type === "feat") arr[2].push(item);
+            if (item.type === "spell") {
+                let container = data.items.find(x => x.data.container?.contents?.find(x => x.id === item._id) || false);
+                if (!container) {
+                    arr[1].push(item);
+                } else {
+                    arr[0].push(item);
+                }
+            }
+            else if (item.type === "feat") {
+                if ((item.data.requirements?.toLowerCase() || "") === "condition") {
+                    arr[7].push(item);
+                } else {
+                    arr[2].push(item);
+                }
+            }
             else if (item.type === "class") arr[3].push(item);
             else if (item.type === "race") arr[4].push(item);
             else if (item.type === "theme") arr[5].push(item);
             else if (item.type === "archetypes") arr[6].push(item);
+            else if (item.type === "asi") arr[8].push(item);
             else if (Object.keys(inventory).includes(item.type)) arr[0].push(item);
             else arr[0].push(item);
             return arr;
-        }, [[], [], [], [], [], [], []]);
+        }, [[], [], [], [], [], [], [], [], []]);
         
         const spellbook = this._prepareSpellbook(data, spells);
 
@@ -139,6 +154,7 @@ export class ActorSheetSFRPGCharacter extends ActorSheetSFRPG {
             classes: { label: "Class Levels", items: [], hasActions: false, dataset: { type: "class" }, isClass: true },
             race: { label: "Race", items: [], hasActions: false, dataset: { type: "race" }, isRace: true },
             theme: { label: "Theme", items: [], hasActions: false, dataset: { type: "theme" }, isTheme: true },
+            asi: { label: game.i18n.format("SFRPG.Items.Categories.AbilityScoreIncrease"), items: asis, hasActions: false, dataset: { type: "asi" }, isASI: true },
             archetypes: { label: "Archetypes", items: [], dataset: { type: "archetypes" }, isArchetype: true },
             active: { label: "Active", items: [], hasActions: true, dataset: { type: "feat", "activation.type": "action" } },
             passive: { label: "Passive", items: [], hasActions: false, dataset: { type: "feat" } }
@@ -173,9 +189,9 @@ export class ActorSheetSFRPGCharacter extends ActorSheetSFRPG {
             return arr;
         }, [[], [], [], [], []]);
 
-        modifiers.conditions.modifiers = conditions;
+        modifiers.conditions.items = conditionItems;
         modifiers.permanent.modifiers = permanent;
-        modifiers.temporary.modifiers = temporary;
+        modifiers.temporary.modifiers = temporary.concat(conditions);
 
         data.modifiers = Object.values(modifiers);
     }
@@ -231,29 +247,15 @@ export class ActorSheetSFRPGCharacter extends ActorSheetSFRPG {
         html.find('.modifier-edit').click(this._onModifierEdit.bind(this));
         html.find('.modifier-delete').click(this._onModifierDelete.bind(this));
         html.find('.modifier-toggle').click(this._onToggleModifierEnabled.bind(this));
-        html.find('.conditions input[type="checkbox"]').change(this._onToggleConditions.bind(this));
     }
 
-    /**
-     * Toggles condition modifiers on or off.
-     * 
-     * @param {Event} event The triggering event.
-     */
-    async _onToggleConditions(event) {
-        event.preventDefault();
+    onBeforeCreateNewItem(itemData) {
+        super.onBeforeCreateNewItem(itemData);
 
-        const target = $(event.currentTarget);
-        const condition = target.data('condition');
-
-        if (["blinded", "cowering", "offkilter", "pinned", "stunned"].includes(condition)) {
-            const flatfooted = $('.condition.flatfooted');
-            const ffIsChecked = flatfooted.is(':checked');
-            flatfooted.prop("checked", !ffIsChecked).change();
-        }
-        
-        const tokens = this.actor.getActiveTokens(true);
-        for (const token of tokens) {
-            await token.toggleEffect(CONFIG.SFRPG.statusEffectIconMapping[condition]);
+        if (itemData["type"] === "asi") {
+            const numASI = this.actor.items.filter(x => x.type === "asi").length;
+            const level = 5 + numASI * 5;
+            itemData.name = game.i18n.format("SFRPG.ItemSheet.AbilityScoreIncrease.ItemName", {level: level});
         }
     }
 
